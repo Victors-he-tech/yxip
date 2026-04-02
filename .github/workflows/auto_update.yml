@@ -1,6 +1,6 @@
 name: 手动标注IP归属地并另存
 
-on:
+于:
   workflow_dispatch:      # 仅保留手动触发按钮
 
 jobs:
