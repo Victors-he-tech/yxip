@@ -1,0 +1,34 @@
+name: 手动标注IP归属地并另存
+
+on:
+  workflow_dispatch:      # 仅保留手动触发按钮
+
+jobs:
+  update-ip-tags:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 1. 拉取仓库代码
+        uses: actions/checkout@v3
+
+      - name: 2. 安装 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 3. 安装依赖包
+        run: pip install requests
+
+      - name: 4. 执行脚本
+        run: python update_ips.py
+
+      - name: 5. 提交新文件到仓库
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          # 只添加新生成的这个文件
+          git add myip_location.txt
+          git commit -m "Manual update: IP locations saved to new file" || exit 0
+          git push
