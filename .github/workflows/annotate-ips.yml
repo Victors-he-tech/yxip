@@ -1,4 +1,4 @@
-name: IP归属地标注（单独输出）
+name: IP归属地标注（使用ip-region库）
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - 'ips/*'
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 1'
+    - cron: '0 0 * * 1'   # 每周一自动更新
 
 jobs:
   annotate:
@@ -22,46 +22,9 @@ jobs:
         with:
           python-version: '3.11'
 
+      # 换用更简单的 ip-region 库，它内置了数据库，无需手动下载
       - name: 安装依赖
-        run: pip install py-ip2region
-
-      # --- 缓存 IPv4 数据库 ---
-      - name: 缓存 IPv4 数据库
-        id: cache-db-v4
-        uses: actions/cache@v4
-        with:
-          path: ip2region_v4.xdb
-          key: ip2region-v4-${{ github.run_number }}
-          restore-keys: |
-            ip2region-v4-
-
-      # --- 缓存 IPv6 数据库 ---
-      - name: 缓存 IPv6 数据库
-        id: cache-db-v6
-        uses: actions/cache@v4
-        with:
-          path: ip2region_v6.xdb
-          key: ip2region-v6-${{ github.run_number }}
-          restore-keys: |
-            ip2region-v6-
-
-      # --- 下载 IPv4 数据库（含备用地址）---
-      - name: 下载 IPv4 数据库（若缓存未命中）
-        if: steps.cache-db-v4.outputs.cache-hit != 'true'
-        run: |
-          echo "下载 IPv4 数据库..."
-          wget -O ip2region_v4.xdb https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb || \
-          wget -O ip2region_v4.xdb https://raw.fastgit.org/lionsoul2014/ip2region/master/data/ip2region_v4.xdb || \
-          wget -O ip2region_v4.xdb https://hub.fastgit.xyz/lionsoul2014/ip2region/master/data/ip2region_v4.xdb
-
-      # --- 下载 IPv6 数据库（含备用地址）---
-      - name: 下载 IPv6 数据库（若缓存未命中）
-        if: steps.cache-db-v6.outputs.cache-hit != 'true'
-        run: |
-          echo "下载 IPv6 数据库..."
-          wget -O ip2region_v6.xdb https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v6.xdb || \
-          wget -O ip2region_v6.xdb https://raw.fastgit.org/lionsoul2014/ip2region/master/data/ip2region_v6.xdb || \
-          wget -O ip2region_v6.xdb https://hub.fastgit.xyz/lionsoul2014/ip2region/master/data/ip2region_v6.xdb
+        run: pip install ip-region
 
       - name: 批量标注 IP（每个文件单独输出）
         run: |
@@ -71,9 +34,9 @@ jobs:
           python3 << 'EOF'
           import os
           import glob
-          from ip2region import Ip2Region
+          from ipregion import IP2Region
 
-          # 精简常用映射表（中文名 -> 两位代码）
+          # 精简常用国家/地区映射表（中文名 -> 两位代码）
           CODE_MAP = {
               "中国": "CN", "台湾": "TW", "香港": "HK", "澳门": "MO",
               "美国": "US", "加拿大": "CA", "墨西哥": "MX",
@@ -87,25 +50,16 @@ jobs:
               "印度尼西亚": "ID", "未知": "UNKNOWN"
           }
 
-          # 初始化双数据库查询器
-          searcher_v4 = Ip2Region("ip2region_v4.xdb")
-          searcher_v6 = Ip2Region("ip2region_v6.xdb")
+          # 初始化查询器（它会自动处理数据库）
+          ip2region = IP2Region()
 
           def get_country_code(ip):
-              # 先尝试 IPv4
               try:
-                  res = searcher_v4.search(ip)
-                  if res:
-                      cn = res.split('|')[0]
-                      return CODE_MAP.get(cn, cn[:2].upper())
-              except:
-                  pass
-              # 再尝试 IPv6
-              try:
-                  res = searcher_v6.search(ip)
-                  if res:
-                      cn = res.split('|')[0]
-                      return CODE_MAP.get(cn, cn[:2].upper())
+                  # 查询，返回结果格式为 "国家|区域|省份|城市|ISP"
+                  result = ip2region.search(ip)
+                  if result:
+                      country_cn = result.split('|')[0]
+                      return CODE_MAP.get(country_cn, country_cn[:2].upper())
               except:
                   pass
               return "UNKNOWN"
