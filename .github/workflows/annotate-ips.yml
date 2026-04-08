@@ -1,0 +1,36 @@
+name: 自动标注IP归属地
+
+on:
+  push:
+    paths:
+      - 'ips/*.txt'
+  workflow_dispatch:
+
+jobs:
+  annotate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖库
+        run: pip install ip2region
+
+      - name: 运行标注脚本
+        run: python annotate.py ips results
+
+      - name: 提交结果到仓库
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add results/
+          git diff --quiet && git diff --staged --quiet || git commit -m "🤖 自动更新 IP 标注结果"
+          git push
