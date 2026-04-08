@@ -1,4 +1,4 @@
-name: 自动标注IP归属地
+name: IP 归属地标注
 
 on:
   push:
@@ -13,24 +13,30 @@ jobs:
       contents: write
 
     steps:
-      - name: 拉取代码
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: 设置 Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: 安装依赖库
-        run: pip install py-ip2region
-
-      - name: 运行标注脚本
-        run: python annotate.py ips results
-
-      - name: 提交结果到仓库
+      - name: 安装 nali
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          wget https://github.com/zu1k/nali/releases/download/v3.6.0/nali-linux-amd64-v3.6.0.gz
+          gunzip nali-linux-amd64-v3.6.0.gz
+          chmod +x nali-linux-amd64-v3.6.0
+          sudo mv nali-linux-amd64-v3.6.0 /usr/local/bin/nali
+
+      - name: 初始化 nali (下载IP数据库)
+        run: nali update
+
+      - name: 批量标注 IP
+        run: |
+          mkdir -p results
+          for f in ips/*.txt; do
+            name=$(basename "$f" .txt)
+            cat "$f" | nali > "results/${name}_标注.txt"
+          done
+
+      - name: 提交结果
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
           git add results/
-          git diff --quiet && git diff --staged --quiet || git commit -m "🤖 自动更新 IP 标注结果"
+          git diff --quiet || git commit -m "自动更新 IP 标注结果"
           git push
