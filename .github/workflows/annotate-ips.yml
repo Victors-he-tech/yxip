@@ -1,6 +1,6 @@
 name: 自动标注IP归属地
 
-于:
+on:
   push:
     paths:
       - 'ips/*.txt'
