@@ -17,10 +17,10 @@ jobs:
 
       - name: 安装 nali
         run: |
-          wget https://github.com/zu1k/nali/releases/download/v3.6.0/nali-linux-amd64-v3.6.0.gz
-          gunzip nali-linux-amd64-v3.6.0.gz
-          chmod +x nali-linux-amd64-v3.6.0
-          sudo mv nali-linux-amd64-v3.6.0 /usr/local/bin/nali
+          wget https://github.com/zu1k/nali/releases/download/v0.8.1/nali-linux-amd64-v0.8.1.gz
+          gunzip nali-linux-amd64-v0.8.1.gz
+          chmod +x nali-linux-amd64-v0.8.1
+          sudo mv nali-linux-amd64-v0.8.1 /usr/local/bin/nali
 
       - name: 初始化 nali (下载IP数据库)
         run: nali update
