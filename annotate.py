@@ -13,13 +13,16 @@ import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # 数据库文件路径
-DB_PATH = "ip2region.xdb"
+DB_PATH = "ip2region_v4.xdb"
 
 # 多个备用下载地址（按优先级排序）
 DB_URLS = [
-    "https://github.com/lionsoul2014/ip2region/raw/master/data/ip2region.xdb",
-    "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region.xdb",
-    "https://gitee.com/lionsoul/ip2region/raw/master/data/ip2region.xdb",  # 国内镜像
+    # 官方 GitHub raw 链接
+    "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb",
+    # 官方 GitHub 直接链接
+    "https://github.com/lionsoul2014/ip2region/raw/master/data/ip2region_v4.xdb",
+    # 备用：jsDelivr CDN 加速
+    "https://cdn.jsdelivr.net/gh/lionsoul2014/ip2region@master/data/ip2region_v4.xdb",
 ]
 
 def download_db():
@@ -28,10 +31,11 @@ def download_db():
         try:
             print(f"尝试下载: {url}")
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=30) as response:
+            with urllib.request.urlopen(req, timeout=60) as response:
                 with open(DB_PATH, 'wb') as f:
                     f.write(response.read())
-            print(f"数据库下载成功，大小: {os.path.getsize(DB_PATH)} 字节")
+            file_size = os.path.getsize(DB_PATH)
+            print(f"数据库下载成功，大小: {file_size} 字节")
             return True
         except Exception as e:
             print(f"下载失败: {e}")
@@ -66,10 +70,9 @@ def annotate_file(input_path, output_path):
                 continue
             try:
                 result = searcher.search(ip)
-                # result 格式: "国家|区域|省份|城市|ISP"
                 country = result.split('|')[0] if result else "未知"
-            except Exception as e:
-                country = f"查询失败"
+            except:
+                country = "查询失败"
             fout.write(f"{ip} -> {country}\n")
 
 if __name__ == "__main__":
