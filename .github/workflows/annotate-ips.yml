@@ -1,10 +1,12 @@
-name: IP 归属地标注
+name: IP归属地标注（单独输出）
 
 on:
   push:
     paths:
       - 'ips/*'
   workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 1'
 
 jobs:
   annotate:
@@ -15,37 +17,119 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 nali
-        run: |
-          wget https://github.com/zu1k/nali/releases/download/v0.8.1/nali-linux-amd64-v0.8.1.gz
-          gunzip nali-linux-amd64-v0.8.1.gz
-          chmod +x nali-linux-amd64-v0.8.1
-          sudo mv nali-linux-amd64-v0.8.1 /usr/local/bin/nali
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: 初始化 nali
-        run: nali update
+      - name: 安装依赖
+        run: pip install py-ip2region
 
-      - name: 批量标注 IP
+      # --- 缓存 IPv4 数据库 ---
+      - name: 缓存 IPv4 数据库
+        id: cache-db-v4
+        uses: actions/cache@v4
+        with:
+          path: ip2region_v4.xdb
+          key: ip2region-v4-${{ github.run_number }}
+          restore-keys: |
+            ip2region-v4-
+
+      # --- 缓存 IPv6 数据库 ---
+      - name: 缓存 IPv6 数据库
+        id: cache-db-v6
+        uses: actions/cache@v4
+        with:
+          path: ip2region_v6.xdb
+          key: ip2region-v6-${{ github.run_number }}
+          restore-keys: |
+            ip2region-v6-
+
+      # --- 下载 IPv4 数据库（含备用地址）---
+      - name: 下载 IPv4 数据库（若缓存未命中）
+        if: steps.cache-db-v4.outputs.cache-hit != 'true'
         run: |
-          echo "====== 开始处理 IP 文件 ======"
+          echo "下载 IPv4 数据库..."
+          wget -O ip2region_v4.xdb https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb || \
+          wget -O ip2region_v4.xdb https://raw.fastgit.org/lionsoul2014/ip2region/master/data/ip2region_v4.xdb || \
+          wget -O ip2region_v4.xdb https://hub.fastgit.xyz/lionsoul2014/ip2region/master/data/ip2region_v4.xdb
+
+      # --- 下载 IPv6 数据库（含备用地址）---
+      - name: 下载 IPv6 数据库（若缓存未命中）
+        if: steps.cache-db-v6.outputs.cache-hit != 'true'
+        run: |
+          echo "下载 IPv6 数据库..."
+          wget -O ip2region_v6.xdb https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v6.xdb || \
+          wget -O ip2region_v6.xdb https://raw.fastgit.org/lionsoul2014/ip2region/master/data/ip2region_v6.xdb || \
+          wget -O ip2region_v6.xdb https://hub.fastgit.xyz/lionsoul2014/ip2region/master/data/ip2region_v6.xdb
+
+      - name: 批量标注 IP（每个文件单独输出）
+        run: |
           mkdir -p results
-          echo "当前工作目录: $(pwd)"
-          echo "ips 文件夹内容:"
-          ls -la ips/ || echo "ips 文件夹不存在或为空"
+          echo "====== 开始处理 ips 文件夹内所有文件 ======"
           
-          for f in ips/*; do
-            if [ -f "$f" ]; then
-              name=$(basename "$f")
-              echo "正在处理文件: $f -> results/${name}_标注.txt"
-              cat "$f" | nali > "results/${name}_标注.txt"
-              echo "生成结果文件行数: $(wc -l < "results/${name}_标注.txt")"
-            else
-              echo "跳过非文件项: $f"
-            fi
-          done
+          python3 << 'EOF'
+          import os
+          import glob
+          from ip2region import Ip2Region
+
+          # 精简常用映射表（中文名 -> 两位代码）
+          CODE_MAP = {
+              "中国": "CN", "台湾": "TW", "香港": "HK", "澳门": "MO",
+              "美国": "US", "加拿大": "CA", "墨西哥": "MX",
+              "日本": "JP", "韩国": "KR", "新加坡": "SG", "印度": "IN",
+              "英国": "GB", "德国": "DE", "法国": "FR", "意大利": "IT",
+              "西班牙": "ES", "荷兰": "NL", "瑞士": "CH", "瑞典": "SE",
+              "俄罗斯": "RU", "澳大利亚": "AU", "新西兰": "NZ",
+              "巴西": "BR", "阿根廷": "AR", "南非": "ZA",
+              "阿联酋": "AE", "沙特阿拉伯": "SA", "土耳其": "TR",
+              "泰国": "TH", "越南": "VN", "马来西亚": "MY", "菲律宾": "PH",
+              "印度尼西亚": "ID", "未知": "UNKNOWN"
+          }
+
+          # 初始化双数据库查询器
+          searcher_v4 = Ip2Region("ip2region_v4.xdb")
+          searcher_v6 = Ip2Region("ip2region_v6.xdb")
+
+          def get_country_code(ip):
+              # 先尝试 IPv4
+              try:
+                  res = searcher_v4.search(ip)
+                  if res:
+                      cn = res.split('|')[0]
+                      return CODE_MAP.get(cn, cn[:2].upper())
+              except:
+                  pass
+              # 再尝试 IPv6
+              try:
+                  res = searcher_v6.search(ip)
+                  if res:
+                      cn = res.split('|')[0]
+                      return CODE_MAP.get(cn, cn[:2].upper())
+              except:
+                  pass
+              return "UNKNOWN"
+
+          # 遍历 ips 下所有文件（排除目录）
+          for file_path in glob.glob("ips/*"):
+              if not os.path.isfile(file_path):
+                  continue
+              base = os.path.basename(file_path)
+              out_path = f"results/{base}_标注.txt"
+              print(f"处理文件: {file_path} -> {out_path}")
+              
+              with open(file_path, "r", encoding="utf-8") as fin, \
+                   open(out_path, "w", encoding="utf-8") as fout:
+                  for line in fin:
+                      ip = line.strip()
+                      if not ip or ip.startswith('#'):
+                          continue
+                      code = get_country_code(ip)
+                      fout.write(f"{ip} #{code}\n")
+          EOF
           
-          echo "====== results 文件夹内容 ======"
-          ls -la results/ || echo "results 文件夹为空"
+          echo "====== 处理完成 ======"
+          ls -la results/
 
       - name: 提交结果
         run: |
@@ -53,10 +137,9 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add results/
           if git diff --cached --quiet; then
-            echo "没有新的更改需要提交"
+            echo "结果无变化，跳过提交"
           else
             git commit -m "🤖 自动更新 IP 标注结果"
             git pull --rebase origin main
             git push origin main
-            echo "结果已推送到仓库"
           fi
