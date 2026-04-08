@@ -1,4 +1,4 @@
-name: IP归属地标注（双离线库·免注册）
+name: IP归属地标注（ip2region·免注册稳定版）
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - 'ips/*'
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 1'   # 每周一自动更新数据库
+    - cron: '0 0 * * 1'   # 每周一自动运行，保持数据库缓存新鲜
 
 jobs:
   annotate:
@@ -23,12 +23,11 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖
-        run: |
-          pip install py-ip2region geoip2
+        run: pip install py-ip2region
 
-      # ========== ip2region 数据库 ==========
+      # ========== ip2region 数据库（唯一数据源）==========
       - name: 缓存 ip2region 数据库
-        id: cache-ip2region
+        id: cache-db
         uses: actions/cache@v4
         with:
           path: ip2region_v4.xdb
@@ -36,29 +35,13 @@ jobs:
           restore-keys: ip2region-db-
 
       - name: 下载 ip2region 数据库（若缓存未命中）
-        if: steps.cache-ip2region.outputs.cache-hit != 'true'
+        if: steps.cache-db.outputs.cache-hit != 'true'
         run: |
-          echo "下载 ip2region 数据库..."
+          echo "从 GitHub 官方源下载 ip2region 数据库..."
           wget -O ip2region_v4.xdb https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb
 
-      # ========== GeoLite2 数据库（免注册镜像）==========
-      - name: 缓存 GeoLite2 数据库
-        id: cache-geolite2
-        uses: actions/cache@v4
-        with:
-          path: GeoLite2-Country.mmdb
-          key: geolite2-db-${{ github.run_number }}
-          restore-keys: geolite2-db-
-
-      - name: 下载 GeoLite2 数据库（若缓存未命中）
-        if: steps.cache-geolite2.outputs.cache-hit != 'true'
-        run: |
-          echo "从 GitCode 镜像下载 GeoLite2 数据库..."
-          wget -O GeoLite2-Country.mmdb.gz https://gitcode.com/open-source-toolkit/94ce3/raw/main/GeoLite2-Country.mmdb.gz
-          gunzip GeoLite2-Country.mmdb.gz
-
       # ========== 执行标注 ==========
-      - name: 批量标注 IP（清空旧结果，双库 Fallback）
+      - name: 批量标注 IP
         run: |
           rm -rf results
           mkdir -p results
@@ -68,7 +51,9 @@ jobs:
           import os
           import glob
           import sys
+          from ip2region import Ip2Region
 
+          # 精简备用映射表（当内置代码缺失时使用）
           CUSTOM_MAP = {
               "中国": "CN", "台湾": "TW", "香港": "HK", "澳门": "MO",
               "美国": "US", "加拿大": "CA", "墨西哥": "MX",
@@ -83,49 +68,31 @@ jobs:
           }
 
           try:
-              from ip2region import Ip2Region
-              ip2r = Ip2Region("ip2region_v4.xdb")
-              print("✅ ip2region 加载成功")
+              searcher = Ip2Region("ip2region_v4.xdb")
+              print("✅ ip2region 数据库加载成功")
           except Exception as e:
-              print(f"⚠️ ip2region 加载失败: {e}")
-              ip2r = None
-
-          try:
-              import geoip2.database
-              geo_reader = geoip2.database.Reader("GeoLite2-Country.mmdb")
-              print("✅ GeoLite2 加载成功")
-          except Exception as e:
-              print(f"⚠️ GeoLite2 加载失败: {e}")
-              geo_reader = None
-
-          if ip2r is None and geo_reader is None:
-              print("❌ 致命错误：没有任何可用的 IP 数据库，程序退出。")
+              print(f"❌ 数据库加载失败: {e}")
               sys.exit(1)
 
           def get_country_code(ip):
-              if ip2r:
-                  try:
-                      res = ip2r.search(ip)
-                      if res:
-                          parts = res.split('|')
-                          if len(parts) >= 5 and parts[4]:
-                              return parts[4]
-                          cn = parts[0]
-                          if cn in CUSTOM_MAP:
-                              return CUSTOM_MAP[cn]
-                          return cn[:2].upper()
-                  except:
-                      pass
-
-              if geo_reader:
-                  try:
-                      res = geo_reader.country(ip)
-                      if res and res.country.iso_code:
-                          return res.country.iso_code
-                  except:
-                      pass
-
-              return "UNKNOWN"
+              try:
+                  res = searcher.search(ip)
+                  if not res:
+                      return "UNKNOWN"
+                  parts = res.split('|')
+                  # 优先使用内置的两字母国家代码（通常在第5部分）
+                  if len(parts) >= 5 and parts[4] and len(parts[4]) == 2:
+                      return parts[4].upper()
+                  # 其次使用中文国名映射
+                  cn = parts[0]
+                  if cn in CUSTOM_MAP:
+                      return CUSTOM_MAP[cn]
+                  # 最后尝试取中文名前两字母作为备用
+                  if cn and cn != "未知":
+                      return cn[:2].upper()
+                  return "UNKNOWN"
+              except Exception as e:
+                  return "UNKNOWN"
 
           files = glob.glob("ips/*")
           if not files:
@@ -146,9 +113,6 @@ jobs:
                               continue
                           code = get_country_code(ip)
                           fout.write(f"{ip} #{code}\n")
-
-          if geo_reader:
-              geo_reader.close()
           EOF
           
           echo "====== 处理完成 ======"
@@ -163,7 +127,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "结果无变化，跳过提交"
           else
-            git commit -m "🤖 自动更新 IP 标注结果（双离线库）"
+            git commit -m "🤖 自动更新 IP 标注结果"
             git pull --rebase origin main
             git push origin main
           fi
