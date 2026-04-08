@@ -3,7 +3,7 @@ name: IP 归属地标注
 于:
   push:
     paths:
-      - 'ip ku/*'              # 监听 ips 文件夹下的所有文件（不管后缀）
+      - 'ipku/*'              # 监听 ips 文件夹下的所有文件（不管后缀）
   workflow_dispatch:
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
       - name: 批量标注 IP
         run: |
           mkdir -p results
-          for f in ip ku/*; do
+          for f in ipku/*; do
             # 跳过文件夹，只处理文件
             if [ -f "$f" ]; then
               name=$(basename "$f")
