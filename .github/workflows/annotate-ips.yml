@@ -1,9 +1,9 @@
 name: IP 归属地标注
 
-于:
+on:
   push:
     paths:
-      - 'ip ku/*.txt'
+      - 'ips/*'              # 监听 ips 文件夹下的所有文件（不管后缀）
   workflow_dispatch:
 
 jobs:
@@ -22,21 +22,25 @@ jobs:
           chmod +x nali-linux-amd64-v0.8.1
           sudo mv nali-linux-amd64-v0.8.1 /usr/local/bin/nali
 
-      - name: 初始化 nali (下载IP数据库)
+      - name: 初始化 nali
         run: nali update
 
       - name: 批量标注 IP
         run: |
           mkdir -p results
-          for f in ips/*.txt; do
-            name=$(basename "$f" .txt)
-            cat "$f" | nali > "results/${name}_标注.txt"
+          for f in ips/*; do
+            # 跳过文件夹，只处理文件
+            if [ -f "$f" ]; then
+              name=$(basename "$f")
+              cat "$f" | nali > "results/${name}_标注.txt"
+            fi
           done
 
       - name: 提交结果
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add results/
-          git diff --quiet || git commit -m "自动更新 IP 标注结果"
-          git push
+          git commit -m "🤖 自动更新 IP 标注结果" || echo "没有新更改"
+          git pull --rebase origin main
+          git push origin main
