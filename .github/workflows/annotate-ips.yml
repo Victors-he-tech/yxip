@@ -1,4 +1,4 @@
-name: IP归属地标注（双离线库保障）
+name: IP归属地标注（双离线库·免注册）
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - 'ips/*'
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 1'   # 每周一自动更新数据库缓存
+    - cron: '0 0 * * 1'   # 每周一自动更新数据库
 
 jobs:
   annotate:
@@ -22,54 +22,54 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 安装 ip2region 和 IP2Location 两个库
       - name: 安装依赖
-        run: pip install ip2region IP2Location
+        run: |
+          pip install ip2region geoip2
 
-      # --- 缓存 ip2region 数据库 ---
+      # ========== ip2region 数据库 ==========
       - name: 缓存 ip2region 数据库
         id: cache-ip2region
         uses: actions/cache@v4
         with:
-          path: ip2region.xdb
+          path: ip2region_v4.xdb
           key: ip2region-db-${{ github.run_number }}
           restore-keys: ip2region-db-
 
       - name: 下载 ip2region 数据库（若缓存未命中）
         if: steps.cache-ip2region.outputs.cache-hit != 'true'
         run: |
-          echo "下载 ip2region 数据库..."
-          wget -O ip2region.xdb https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region.xdb
+          echo "下载 ip2region 数据库（优先 GitHub 官方源）..."
+          wget -O ip2region_v4.xdb https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb || \
+          wget -O ip2region_v4.xdb https://gitcode.com/lionsoul/ip2region/raw/master/data/ip2region_v4.xdb
 
-      # --- 缓存 IP2Location LITE 数据库 ---
-      - name: 缓存 IP2Location LITE 数据库
-        id: cache-ip2location
+      # ========== GeoLite2 数据库（jsDelivr 镜像，免注册）==========
+      - name: 缓存 GeoLite2 数据库
+        id: cache-geolite2
         uses: actions/cache@v4
         with:
-          path: IP2LOCATION-LITE-DB1.BIN
-          key: ip2location-lite-${{ github.run_number }}
-          restore-keys: ip2location-lite-
+          path: GeoLite2-Country.mmdb
+          key: geolite2-db-${{ github.run_number }}
+          restore-keys: geolite2-db-
 
-      # 下载 IP2Location LITE 数据库（免费，无需注册）
-      - name: 下载 IP2Location LITE 数据库（若缓存未命中）
-        if: steps.cache-ip2location.outputs.cache-hit != 'true'
+      - name: 下载 GeoLite2 数据库（若缓存未命中）
+        if: steps.cache-geolite2.outputs.cache-hit != 'true'
         run: |
-          echo "下载 IP2Location LITE 数据库（免费版）..."
-          wget -O IP2LOCATION-LITE-DB1.BIN.ZIP https://download.ip2location.com/lite/IP2LOCATION-LITE-DB1.BIN.ZIP
-          unzip -o IP2LOCATION-LITE-DB1.BIN.ZIP
-          rm IP2LOCATION-LITE-DB1.BIN.ZIP
+          echo "从 jsDelivr 镜像下载 GeoLite2 数据库..."
+          wget -O GeoLite2-Country.mmdb.gz https://cdn.jsdelivr.net/npm/geolite2-country@1.0.2/GeoLite2-Country.mmdb.gz
+          gunzip GeoLite2-Country.mmdb.gz
 
-      # --- 执行标注（双库备份）---
-      - name: 批量标注 IP（双库 Fallback）
+      # ========== 执行标注 ==========
+      - name: 批量标注 IP（清空旧结果，双库 Fallback）
         run: |
+          # 清空 results 文件夹，确保输出与 ips 完全对应
+          rm -rf results
           mkdir -p results
           echo "====== 开始处理 ips 文件夹内所有文件 ======"
           
           python3 << 'EOF'
           import os
           import glob
-          from ip2region import Ip2Region
-          import IP2Location
+          import sys
 
           # 自定义中文国名映射表（备用）
           CUSTOM_MAP = {
@@ -86,60 +86,84 @@ jobs:
           }
 
           # 初始化两个查询器
-          ip2r = Ip2Region("ip2region.xdb")
-          ip2l = IP2Location.IP2Location("IP2LOCATION-LITE-DB1.BIN")
+          try:
+              from ip2region import Ip2Region
+              ip2r = Ip2Region("ip2region_v4.xdb")
+              print("✅ ip2region 加载成功")
+          except Exception as e:
+              print(f"⚠️ ip2region 加载失败: {e}")
+              ip2r = None
+
+          try:
+              import geoip2.database
+              geo_reader = geoip2.database.Reader("GeoLite2-Country.mmdb")
+              print("✅ GeoLite2 加载成功")
+          except Exception as e:
+              print(f"⚠️ GeoLite2 加载失败: {e}")
+              geo_reader = None
+
+          if ip2r is None and geo_reader is None:
+              print("❌ 致命错误：没有任何可用的 IP 数据库，程序退出。")
+              sys.exit(1)
 
           def get_country_code(ip):
               # 1. 首先尝试 ip2region
-              try:
-                  res = ip2r.search(ip)
-                  if res:
-                      # 如果返回格式为 "国家|省份|城市|ISP|国家代码"
-                      parts = res.split('|')
-                      # 优先使用内置国家代码
-                      if len(parts) >= 5 and parts[4]:
-                          return parts[4]
-                      # 其次使用中文国名映射
-                      cn = parts[0]
-                      if cn in CUSTOM_MAP:
-                          return CUSTOM_MAP[cn]
-                      # 最后返回中文名前两字母作为备用
-                      return cn[:2].upper()
-              except:
-                  pass
+              if ip2r:
+                  try:
+                      res = ip2r.search(ip)
+                      if res:
+                          parts = res.split('|')
+                          # 优先使用内置国家代码（第5部分）
+                          if len(parts) >= 5 and parts[4]:
+                              return parts[4]
+                          # 其次使用中文国名映射
+                          cn = parts[0]
+                          if cn in CUSTOM_MAP:
+                              return CUSTOM_MAP[cn]
+                          # 最后返回中文名前两字母作为备用
+                          return cn[:2].upper()
+                  except:
+                      pass
 
-              # 2. 如果 ip2region 失败，尝试 IP2Location LITE
-              try:
-                  res = ip2l.get_country_short(ip)
-                  if res:
-                      return res
-              except:
-                  pass
+              # 2. 如果 ip2region 失败，尝试 GeoLite2
+              if geo_reader:
+                  try:
+                      res = geo_reader.country(ip)
+                      if res and res.country.iso_code:
+                          return res.country.iso_code
+                  except:
+                      pass
 
               # 3. 都失败则返回 UNKNOWN
               return "UNKNOWN"
 
           # 遍历 ips 下所有文件（排除目录）
-          for file_path in glob.glob("ips/*"):
-              if not os.path.isfile(file_path):
-                  continue
-              base = os.path.basename(file_path)
-              out_path = f"results/{base}_标注.txt"
-              print(f"处理文件: {file_path} -> {out_path}")
-              
-              with open(file_path, "r", encoding="utf-8") as fin, \
-                   open(out_path, "w", encoding="utf-8") as fout:
-                  for line in fin:
-                      ip = line.strip()
-                      if not ip or ip.startswith('#'):
-                          continue
-                      code = get_country_code(ip)
-                      fout.write(f"{ip} #{code}\n")
+          files = glob.glob("ips/*")
+          if not files:
+              print("⚠️ ips 文件夹为空，没有文件需要处理。")
+          else:
+              for file_path in files:
+                  if not os.path.isfile(file_path):
+                      continue
+                  base = os.path.basename(file_path)
+                  out_path = f"results/{base}_标注.txt"
+                  print(f"处理文件: {file_path} -> {out_path}")
+                  
+                  with open(file_path, "r", encoding="utf-8") as fin, \
+                       open(out_path, "w", encoding="utf-8") as fout:
+                      for line in fin:
+                          ip = line.strip()
+                          if not ip or ip.startswith('#'):
+                              continue
+                          code = get_country_code(ip)
+                          fout.write(f"{ip} #{code}\n")
 
-          ip2l.close()
+          if geo_reader:
+              geo_reader.close()
           EOF
           
           echo "====== 处理完成 ======"
+          echo "results 文件夹内容:"
           ls -la results/
 
       - name: 提交结果
@@ -150,7 +174,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "结果无变化，跳过提交"
           else
-            git commit -m "🤖 自动更新 IP 标注结果（双离线库保障）"
+            git commit -m "🤖 自动更新 IP 标注结果（双离线库）"
             git pull --rebase origin main
             git push origin main
           fi
