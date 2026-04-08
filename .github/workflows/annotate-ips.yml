@@ -1,6 +1,6 @@
 name: 自动标注IP归属地
 
-on:
+于:
   push:
     paths:
       - 'ips/*.txt'
@@ -22,7 +22,7 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖库
-        run: pip install ip2region
+        run: pip install ip2region-python
 
       - name: 运行标注脚本
         run: python annotate.py ips results
