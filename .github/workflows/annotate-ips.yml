@@ -1,4 +1,4 @@
-name: IP归属地标注（使用ip-region库）
+name: IP归属地标注（双离线库保障）
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - 'ips/*'
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 1'   # 每周一自动更新
+    - cron: '0 0 * * 1'   # 每周一自动更新数据库缓存
 
 jobs:
   annotate:
@@ -22,11 +22,45 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 换用更简单的 ip-region 库，它内置了数据库，无需手动下载
+      # 安装 ip2region 和 IP2Location 两个库
       - name: 安装依赖
-        run: pip install ip-region
+        run: pip install ip2region IP2Location
 
-      - name: 批量标注 IP（每个文件单独输出）
+      # --- 缓存 ip2region 数据库 ---
+      - name: 缓存 ip2region 数据库
+        id: cache-ip2region
+        uses: actions/cache@v4
+        with:
+          path: ip2region.xdb
+          key: ip2region-db-${{ github.run_number }}
+          restore-keys: ip2region-db-
+
+      - name: 下载 ip2region 数据库（若缓存未命中）
+        if: steps.cache-ip2region.outputs.cache-hit != 'true'
+        run: |
+          echo "下载 ip2region 数据库..."
+          wget -O ip2region.xdb https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region.xdb
+
+      # --- 缓存 IP2Location LITE 数据库 ---
+      - name: 缓存 IP2Location LITE 数据库
+        id: cache-ip2location
+        uses: actions/cache@v4
+        with:
+          path: IP2LOCATION-LITE-DB1.BIN
+          key: ip2location-lite-${{ github.run_number }}
+          restore-keys: ip2location-lite-
+
+      # 下载 IP2Location LITE 数据库（免费，无需注册）
+      - name: 下载 IP2Location LITE 数据库（若缓存未命中）
+        if: steps.cache-ip2location.outputs.cache-hit != 'true'
+        run: |
+          echo "下载 IP2Location LITE 数据库（免费版）..."
+          wget -O IP2LOCATION-LITE-DB1.BIN.ZIP https://download.ip2location.com/lite/IP2LOCATION-LITE-DB1.BIN.ZIP
+          unzip -o IP2LOCATION-LITE-DB1.BIN.ZIP
+          rm IP2LOCATION-LITE-DB1.BIN.ZIP
+
+      # --- 执行标注（双库备份）---
+      - name: 批量标注 IP（双库 Fallback）
         run: |
           mkdir -p results
           echo "====== 开始处理 ips 文件夹内所有文件 ======"
@@ -34,10 +68,11 @@ jobs:
           python3 << 'EOF'
           import os
           import glob
-          from ipregion import IP2Region
+          from ip2region import Ip2Region
+          import IP2Location
 
-          # 精简常用国家/地区映射表（中文名 -> 两位代码）
-          CODE_MAP = {
+          # 自定义中文国名映射表（备用）
+          CUSTOM_MAP = {
               "中国": "CN", "台湾": "TW", "香港": "HK", "澳门": "MO",
               "美国": "US", "加拿大": "CA", "墨西哥": "MX",
               "日本": "JP", "韩国": "KR", "新加坡": "SG", "印度": "IN",
@@ -47,21 +82,41 @@ jobs:
               "巴西": "BR", "阿根廷": "AR", "南非": "ZA",
               "阿联酋": "AE", "沙特阿拉伯": "SA", "土耳其": "TR",
               "泰国": "TH", "越南": "VN", "马来西亚": "MY", "菲律宾": "PH",
-              "印度尼西亚": "ID", "未知": "UNKNOWN"
+              "印度尼西亚": "ID",
           }
 
-          # 初始化查询器（它会自动处理数据库）
-          ip2region = IP2Region()
+          # 初始化两个查询器
+          ip2r = Ip2Region("ip2region.xdb")
+          ip2l = IP2Location.IP2Location("IP2LOCATION-LITE-DB1.BIN")
 
           def get_country_code(ip):
+              # 1. 首先尝试 ip2region
               try:
-                  # 查询，返回结果格式为 "国家|区域|省份|城市|ISP"
-                  result = ip2region.search(ip)
-                  if result:
-                      country_cn = result.split('|')[0]
-                      return CODE_MAP.get(country_cn, country_cn[:2].upper())
+                  res = ip2r.search(ip)
+                  if res:
+                      # 如果返回格式为 "国家|省份|城市|ISP|国家代码"
+                      parts = res.split('|')
+                      # 优先使用内置国家代码
+                      if len(parts) >= 5 and parts[4]:
+                          return parts[4]
+                      # 其次使用中文国名映射
+                      cn = parts[0]
+                      if cn in CUSTOM_MAP:
+                          return CUSTOM_MAP[cn]
+                      # 最后返回中文名前两字母作为备用
+                      return cn[:2].upper()
               except:
                   pass
+
+              # 2. 如果 ip2region 失败，尝试 IP2Location LITE
+              try:
+                  res = ip2l.get_country_short(ip)
+                  if res:
+                      return res
+              except:
+                  pass
+
+              # 3. 都失败则返回 UNKNOWN
               return "UNKNOWN"
 
           # 遍历 ips 下所有文件（排除目录）
@@ -80,6 +135,8 @@ jobs:
                           continue
                       code = get_country_code(ip)
                       fout.write(f"{ip} #{code}\n")
+
+          ip2l.close()
           EOF
           
           echo "====== 处理完成 ======"
@@ -93,7 +150,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "结果无变化，跳过提交"
           else
-            git commit -m "🤖 自动更新 IP 标注结果"
+            git commit -m "🤖 自动更新 IP 标注结果（双离线库保障）"
             git pull --rebase origin main
             git push origin main
           fi
