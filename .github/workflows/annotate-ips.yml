@@ -22,7 +22,7 @@ jobs:
           python-version: '3.11'
 
       - name: 安装依赖库
-        run: pip install ip2region-python
+        run: pip install py-ip2region
 
       - name: 运行标注脚本
         run: python annotate.py ips results
