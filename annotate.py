@@ -7,23 +7,53 @@ import os
 import sys
 import glob
 import urllib.request
+import ssl
 
-# 下载 ip2region.xdb 数据库文件
+# 解决某些环境下 SSL 证书问题
+ssl._create_default_https_context = ssl._create_unverified_context
+
+# 数据库文件路径
 DB_PATH = "ip2region.xdb"
-DB_URL = "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region.xdb"
+
+# 多个备用下载地址（按优先级排序）
+DB_URLS = [
+    "https://github.com/lionsoul2014/ip2region/raw/master/data/ip2region.xdb",
+    "https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region.xdb",
+    "https://gitee.com/lionsoul/ip2region/raw/master/data/ip2region.xdb",  # 国内镜像
+]
 
 def download_db():
-    print("正在下载 IP 数据库...")
-    urllib.request.urlretrieve(DB_URL, DB_PATH)
-    print("数据库下载完成。")
+    """下载数据库文件，尝试多个源"""
+    for url in DB_URLS:
+        try:
+            print(f"尝试下载: {url}")
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                with open(DB_PATH, 'wb') as f:
+                    f.write(response.read())
+            print(f"数据库下载成功，大小: {os.path.getsize(DB_PATH)} 字节")
+            return True
+        except Exception as e:
+            print(f"下载失败: {e}")
+            continue
+    
+    print("所有下载源均失败，请检查网络连接。")
+    return False
 
+# 检查并下载数据库
 if not os.path.exists(DB_PATH):
-    download_db()
+    print("未找到数据库文件，开始下载...")
+    if not download_db():
+        sys.exit(1)
 
 # 导入 ip2region
 from ip2region import Ip2Region
 
-searcher = Ip2Region(DB_PATH)
+try:
+    searcher = Ip2Region(DB_PATH)
+except Exception as e:
+    print(f"加载数据库失败: {e}")
+    sys.exit(1)
 
 def annotate_file(input_path, output_path):
     """处理单个文件，给每行 IP 添加国家标注"""
@@ -38,8 +68,8 @@ def annotate_file(input_path, output_path):
                 result = searcher.search(ip)
                 # result 格式: "国家|区域|省份|城市|ISP"
                 country = result.split('|')[0] if result else "未知"
-            except:
-                country = "查询失败"
+            except Exception as e:
+                country = f"查询失败"
             fout.write(f"{ip} -> {country}\n")
 
 if __name__ == "__main__":
@@ -48,7 +78,12 @@ if __name__ == "__main__":
 
     os.makedirs(output_dir, exist_ok=True)
 
-    for ip_file in glob.glob(f"{input_dir}/*.txt"):
+    txt_files = glob.glob(f"{input_dir}/*.txt")
+    if not txt_files:
+        print(f"警告: 在 {input_dir} 目录下没有找到 .txt 文件")
+        sys.exit(0)
+
+    for ip_file in txt_files:
         base = os.path.basename(ip_file)
         out_file = os.path.join(output_dir, base.replace('.txt', '_annotated.txt'))
         print(f"处理: {ip_file} -> {out_file}")
