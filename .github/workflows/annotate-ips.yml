@@ -1,9 +1,9 @@
 name: IP 归属地标注
 
-on:
+于:
   push:
     paths:
-      - 'ips/*.txt'
+      - 'ip ku/*.txt'
   workflow_dispatch:
 
 jobs:
