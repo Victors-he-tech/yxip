@@ -1,4 +1,4 @@
-name: IP归属地标注（ip2region·免注册稳定版）
+name: IP归属地标注（ip-region·免注册）
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - 'ips/*'
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 1'   # 每周一自动运行，保持数据库缓存新鲜
+    - cron: '0 0 * * 1'   # 每周一自动运行，保持数据新鲜
 
 jobs:
   annotate:
@@ -22,23 +22,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 安装依赖
-        run: pip install py-ip2region
-
-      # ========== ip2region 数据库（唯一数据源）==========
-      - name: 缓存 ip2region 数据库
-        id: cache-db
-        uses: actions/cache@v4
-        with:
-          path: ip2region_v4.xdb
-          key: ip2region-db-${{ github.run_number }}
-          restore-keys: ip2region-db-
-
-      - name: 下载 ip2region 数据库（若缓存未命中）
-        if: steps.cache-db.outputs.cache-hit != 'true'
-        run: |
-          echo "从 GitHub 官方源下载 ip2region 数据库..."
-          wget -O ip2region_v4.xdb https://raw.githubusercontent.com/lionsoul2014/ip2region/master/data/ip2region_v4.xdb
+      - name: 安装 ip-region
+        run: pip install ip-region
 
       # ========== 执行标注 ==========
       - name: 批量标注 IP
@@ -51,9 +36,9 @@ jobs:
           import os
           import glob
           import sys
-          from ip2region import Ip2Region
+          from ipregion import IP2Region
 
-          # 精简备用映射表（当内置代码缺失时使用）
+          # 精简备用映射表
           CUSTOM_MAP = {
               "中国": "CN", "台湾": "TW", "香港": "HK", "澳门": "MO",
               "美国": "US", "加拿大": "CA", "墨西哥": "MX",
@@ -68,29 +53,26 @@ jobs:
           }
 
           try:
-              searcher = Ip2Region("ip2region_v4.xdb")
-              print("✅ ip2region 数据库加载成功")
+              ip2region = IP2Region()
+              print("✅ ip-region 加载成功")
           except Exception as e:
-              print(f"❌ 数据库加载失败: {e}")
+              print(f"❌ ip-region 加载失败: {e}")
               sys.exit(1)
 
           def get_country_code(ip):
               try:
-                  res = searcher.search(ip)
+                  res = ip2region.search(ip)
                   if not res:
                       return "UNKNOWN"
+                  # 解析返回的国家/地区代码，格式： "国家代码" 或 "国家|省份|城市|ISP|国家代码"
                   parts = res.split('|')
-                  # 优先使用内置的两字母国家代码（通常在第5部分）
-                  if len(parts) >= 5 and parts[4] and len(parts[4]) == 2:
+                  if len(parts) >= 5 and parts[4]:
                       return parts[4].upper()
-                  # 其次使用中文国名映射
-                  cn = parts[0]
-                  if cn in CUSTOM_MAP:
-                      return CUSTOM_MAP[cn]
-                  # 最后尝试取中文名前两字母作为备用
-                  if cn and cn != "未知":
-                      return cn[:2].upper()
-                  return "UNKNOWN"
+                  # 如果返回的是中文国名，从映射表中查找
+                  if res in CUSTOM_MAP:
+                      return CUSTOM_MAP[res]
+                  # 如果都不是，返回前两个字符的大写形式作为备用
+                  return res[:2].upper()
               except Exception as e:
                   return "UNKNOWN"
 
