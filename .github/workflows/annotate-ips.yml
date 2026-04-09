@@ -1,4 +1,4 @@
-name: IP归属地标注（ip-region·免注册）
+name: IP归属地标注（离线+在线保障）
 
 on:
   push:
@@ -22,8 +22,9 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 安装 ip-region
-        run: pip install ip-region
+      - name: 安装依赖
+        run: |
+          pip install ip-region requests
 
       # ========== 执行标注 ==========
       - name: 批量标注 IP
@@ -36,6 +37,8 @@ jobs:
           import os
           import glob
           import sys
+          import time
+          import requests
           from ipregion import IP2Region
 
           # 精简备用映射表
@@ -54,27 +57,46 @@ jobs:
 
           try:
               ip2region = IP2Region()
-              print("✅ ip-region 加载成功")
+              print("✅ ip-region 离线库加载成功")
           except Exception as e:
               print(f"❌ ip-region 加载失败: {e}")
               sys.exit(1)
 
+          def query_online_api(ip):
+              """作为后备的在线 API 查询"""
+              # 使用 ip-api.com，它无需 API Key，支持国家代码查询
+              url = f"http://ip-api.com/json/{ip}?fields=countryCode"
+              try:
+                  resp = requests.get(url, timeout=5)
+                  if resp.status_code == 200:
+                      data = resp.json()
+                      return data.get('countryCode', 'UNKNOWN')
+              except:
+                  pass
+              return 'UNKNOWN'
+
           def get_country_code(ip):
+              # 1. 优先使用离线库 ip-region
               try:
                   res = ip2region.search(ip)
-                  if not res:
-                      return "UNKNOWN"
-                  # 解析返回的国家/地区代码，格式： "国家代码" 或 "国家|省份|城市|ISP|国家代码"
-                  parts = res.split('|')
-                  if len(parts) >= 5 and parts[4]:
-                      return parts[4].upper()
-                  # 如果返回的是中文国名，从映射表中查找
-                  if res in CUSTOM_MAP:
-                      return CUSTOM_MAP[res]
-                  # 如果都不是，返回前两个字符的大写形式作为备用
-                  return res[:2].upper()
-              except Exception as e:
-                  return "UNKNOWN"
+                  if res and res != "0|0|0|内网IP|0":
+                      parts = res.split('|')
+                      if len(parts) >= 5 and parts[4] and len(parts[4]) == 2:
+                          return parts[4].upper()
+                      if res in CUSTOM_MAP:
+                          return CUSTOM_MAP[res]
+                      return res[:2].upper()
+              except:
+                  pass
+
+              # 2. 离线库失败，尝试在线 API
+              online_code = query_online_api(ip)
+              if online_code != 'UNKNOWN':
+                  print(f"  ⚡ 离线库未命中，在线API成功: {ip} -> {online_code}")
+                  return online_code
+
+              # 3. 全部失败
+              return "UNKNOWN"
 
           files = glob.glob("ips/*")
           if not files:
@@ -95,6 +117,7 @@ jobs:
                               continue
                           code = get_country_code(ip)
                           fout.write(f"{ip} #{code}\n")
+                          time.sleep(0.1) # 避免 API 请求过于频繁
           EOF
           
           echo "====== 处理完成 ======"
@@ -109,7 +132,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "结果无变化，跳过提交"
           else
-            git commit -m "🤖 自动更新 IP 标注结果"
+            git commit -m "🤖 自动更新 IP 标注结果（离线+在线保障）"
             git pull --rebase origin main
             git push origin main
           fi
